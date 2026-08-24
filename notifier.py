@@ -125,13 +125,10 @@ def normalize_rows(rows: list[list[object]]) -> pd.DataFrame:
     return frame.reset_index(drop=True)
 
 
-def fetch_tencent_history(session: requests.Session | None = None) -> pd.DataFrame:
-    client = session or requests.Session()
-    client.trust_env = False
-    client.headers.update({"User-Agent": "588080-V3G-Signal/1.0"})
+def fetch_tencent_block(client: requests.Session, end_date: str) -> pd.DataFrame:
     response = client.get(
         TENCENT_URL,
-        params={"param": f"sh{SYMBOL},day,1990-01-01,2050-01-01,640,qfq"},
+        params={"param": f"sh{SYMBOL},day,1990-01-01,{end_date},640,qfq"},
         timeout=30,
     )
     response.raise_for_status()
@@ -141,6 +138,37 @@ def fetch_tencent_history(session: requests.Session | None = None) -> pd.DataFra
     if not rows:
         raise ValueError("未返回前复权 qfqday 数据，已拒绝改用其他口径")
     return normalize_rows(rows)
+
+
+def fetch_tencent_history(session: requests.Session | None = None) -> pd.DataFrame:
+    client = session or requests.Session()
+    client.trust_env = False
+    client.headers.update({"User-Agent": "588080-V3G-Signal/1.0"})
+
+    parts: list[pd.DataFrame] = []
+    end_date = "2050-01-01"
+    previous_earliest: pd.Timestamp | None = None
+    listing_floor = pd.Timestamp("2020-11-16")
+    for _ in range(6):
+        block = fetch_tencent_block(client, end_date)
+        earliest = pd.Timestamp(block["date"].min())
+        if previous_earliest is not None and earliest >= previous_earliest:
+            break
+        parts.append(block)
+        if earliest <= listing_floor:
+            break
+        previous_earliest = earliest
+        end_date = (earliest + pd.Timedelta(days=30)).strftime("%Y-%m-%d")
+
+    combined = pd.concat(parts, ignore_index=True)
+    duplicates = combined[combined.duplicated("date", keep=False)]
+    if not duplicates.empty:
+        spread = duplicates.groupby("date")["close"].agg(["min", "max"])
+        relative_difference = ((spread["max"] / spread["min"]) - 1).abs()
+        if float(relative_difference.max()) > 1e-8:
+            raise ValueError("腾讯分页行情的复权口径不一致")
+    columns = ["date", "open", "close", "high", "low", "volume"]
+    return normalize_rows(combined[columns].values.tolist())
 
 
 def fetch_baostock_history() -> pd.DataFrame:
