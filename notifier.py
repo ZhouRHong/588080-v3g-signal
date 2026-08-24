@@ -38,6 +38,8 @@ EXIT_VOTES = 6
 TOTAL_VOTES = len(MA_PERIODS) * len(CONFIRMATION_DAYS)
 TIMEZONE = ZoneInfo("Asia/Shanghai")
 TENCENT_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+BASE_DIR = Path(__file__).resolve().parent
+SNAPSHOT_PATH = BASE_DIR / "data" / f"{SYMBOL}_qfq_snapshot.csv"
 
 # Signal-only configuration: deliberately excludes account capital, holdings,
 # costs and other personal/account-specific values.
@@ -60,6 +62,20 @@ EXPECTED_RULE_FINGERPRINT = (
 
 
 @dataclass(frozen=True)
+class PlainAction:
+    code: str
+    label: str
+    explanation: str
+
+
+@dataclass(frozen=True)
+class HistoryResult:
+    frame: pd.DataFrame
+    source: str
+    warning: str
+
+
+@dataclass(frozen=True)
 class SignalReport:
     generated_at: str
     market_date: str
@@ -70,10 +86,14 @@ class SignalReport:
     previous_model_state: str
     state_changed: bool
     data_fresh: bool
+    action_code: str
+    action_label: str
+    action_explanation: str
     rule_action: str
     rule_version: str
     rule_fingerprint: str
     data_source: str
+    data_warning: str
     boundary: str
 
 
@@ -105,8 +125,9 @@ def normalize_rows(rows: list[list[object]]) -> pd.DataFrame:
     return frame.reset_index(drop=True)
 
 
-def fetch_history(session: requests.Session | None = None) -> pd.DataFrame:
+def fetch_tencent_history(session: requests.Session | None = None) -> pd.DataFrame:
     client = session or requests.Session()
+    client.trust_env = False
     client.headers.update({"User-Agent": "588080-V3G-Signal/1.0"})
     response = client.get(
         TENCENT_URL,
@@ -120,6 +141,105 @@ def fetch_history(session: requests.Session | None = None) -> pd.DataFrame:
     if not rows:
         raise ValueError("未返回前复权 qfqday 数据，已拒绝改用其他口径")
     return normalize_rows(rows)
+
+
+def fetch_baostock_history() -> pd.DataFrame:
+    import baostock as bs
+
+    login_result = bs.login()
+    if login_result.error_code != "0":
+        raise RuntimeError(f"Baostock 登录失败：{login_result.error_msg}")
+    try:
+        query = bs.query_history_k_data_plus(
+            f"sh.{SYMBOL}",
+            "date,open,high,low,close,volume",
+            start_date="2020-11-16",
+            end_date=datetime.now(TIMEZONE).date().isoformat(),
+            frequency="d",
+            adjustflag="2",
+        )
+        if query.error_code != "0":
+            raise RuntimeError(f"Baostock 查询失败：{query.error_msg}")
+        rows: list[list[str]] = []
+        while query.next():
+            row = query.get_row_data()
+            # Baostock reports ETF volume in shares; Tencent uses 100-share lots.
+            # Volume is not part of V3G, but normalizing keeps the snapshot coherent.
+            volume_lots = str(float(row[5]) / 100)
+            rows.append([row[0], row[1], row[4], row[2], row[3], volume_lots])
+        return normalize_rows(rows)
+    finally:
+        bs.logout()
+
+
+def load_snapshot(path: Path = SNAPSHOT_PATH) -> pd.DataFrame | None:
+    if not path.exists():
+        return None
+    frame = pd.read_csv(path, encoding="utf-8-sig")
+    required = ["date", "open", "close", "high", "low", "volume"]
+    missing = [column for column in required if column not in frame.columns]
+    if missing:
+        raise ValueError(f"历史快照缺少字段：{','.join(missing)}")
+    return normalize_rows(frame[required].values.tolist())
+
+
+def merge_with_snapshot(snapshot: pd.DataFrame, recent: pd.DataFrame) -> pd.DataFrame:
+    old = snapshot.set_index("date")
+    new = recent.set_index("date")
+    overlap = old.index.intersection(new.index)
+    if len(overlap) < 20:
+        raise ValueError("备用行情与历史快照重叠不足20个交易日")
+    old_close = old.loc[overlap, "close"].astype(float)
+    new_close = new.loc[overlap, "close"].astype(float)
+    relative_difference = ((new_close / old_close) - 1).abs()
+    if float(relative_difference.max()) > 0.002:
+        raise ValueError("备用行情与历史快照复权口径不一致")
+    combined = pd.concat([snapshot, recent], ignore_index=True)
+    combined = combined.drop_duplicates("date", keep="last").sort_values("date")
+    return combined.reset_index(drop=True)
+
+
+def save_snapshot(frame: pd.DataFrame, path: Path = SNAPSHOT_PATH) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    output = frame[["date", "open", "close", "high", "low", "volume"]].copy()
+    output["date"] = pd.to_datetime(output["date"]).dt.strftime("%Y-%m-%d")
+    output.to_csv(path, index=False, encoding="utf-8")
+
+
+def fetch_history(session: requests.Session | None = None) -> HistoryResult:
+    errors: list[str] = []
+    try:
+        return HistoryResult(
+            frame=fetch_tencent_history(session),
+            source="腾讯证券前复权日线 qfqday",
+            warning="",
+        )
+    except Exception as exc:
+        errors.append(f"腾讯：{type(exc).__name__}")
+
+    snapshot = load_snapshot()
+    try:
+        recent = fetch_baostock_history()
+        if snapshot is None:
+            raise RuntimeError("缺少历史快照，不能安全拼接备用行情")
+        return HistoryResult(
+            frame=merge_with_snapshot(snapshot, recent),
+            source="Baostock前复权日线 + 已核对历史快照",
+            warning="腾讯源暂时不可用，已切换备用行情并核对复权口径。",
+        )
+    except Exception as exc:
+        errors.append(f"Baostock：{type(exc).__name__}")
+
+    if snapshot is not None:
+        return HistoryResult(
+            frame=snapshot,
+            source="仓库内已核对历史快照",
+            warning=(
+                "实时行情源暂时不可用，仅使用历史快照；如果日期未更新，"
+                "系统只会显示观望。"
+            ),
+        )
+    raise RuntimeError("所有行情来源均不可用：" + "；".join(errors))
 
 
 def compute_v3g(frame: pd.DataFrame) -> pd.DataFrame:
@@ -160,22 +280,50 @@ def compute_v3g(frame: pd.DataFrame) -> pd.DataFrame:
 
 def build_action(
     previous_state: str, current_state: str, data_fresh: bool
-) -> str:
+) -> PlainAction:
     if not data_fresh:
-        return "数据尚未更新：规则不动作，等待下一个有效交易日收盘"
+        return PlainAction(
+            code="WAIT",
+            label="🟡 观望",
+            explanation="今天还没有新的收盘数据，暂不操作，等待下一个交易日。",
+        )
     if previous_state == current_state == "CASH":
-        return "下一交易日继续空仓等待"
+        return PlainAction(
+            code="WAIT",
+            label="🟡 观望",
+            explanation="规则目前没有新的买入信号，暂不买入。",
+        )
     if previous_state == current_state == SYMBOL:
-        return "下一交易日继续保持模型持仓"
+        return PlainAction(
+            code="HOLD",
+            label="🔵 继续持有",
+            explanation="规则仍支持持有588080，今天没有新的买卖变化。",
+        )
     if previous_state == "CASH" and current_state == SYMBOL:
-        return "状态切换：下一交易日开盘按规则转为模型持仓"
+        return PlainAction(
+            code="BUY",
+            label="🟢 买入提醒",
+            explanation=(
+                "规则刚从观望转为持有；如你决定跟随，下一交易日开盘后人工确认，"
+                "不要追盘中价格。"
+            ),
+        )
     if previous_state == SYMBOL and current_state == "CASH":
-        return "状态切换：下一交易日开盘按规则转为空仓"
+        return PlainAction(
+            code="SELL",
+            label="🔴 卖出提醒",
+            explanation=(
+                "规则刚从持有转为观望；如你决定跟随，下一交易日开盘后人工确认。"
+            ),
+        )
     raise ValueError(f"未知模型状态：{previous_state} -> {current_state}")
 
 
 def build_report(
-    result: pd.DataFrame, now: datetime | None = None
+    result: pd.DataFrame,
+    now: datetime | None = None,
+    data_source: str = "测试行情",
+    data_warning: str = "",
 ) -> SignalReport:
     if len(result) < 2:
         raise ValueError("至少需要两个交易日才能判断状态是否切换")
@@ -188,6 +336,7 @@ def build_report(
     data_fresh = market_date == current_time.date()
     previous_state = str(previous["state"])
     current_state = str(latest["state"])
+    action = build_action(previous_state, current_state, data_fresh)
     return SignalReport(
         generated_at=current_time.isoformat(timespec="seconds"),
         market_date=market_date.isoformat(),
@@ -198,34 +347,51 @@ def build_report(
         previous_model_state=previous_state,
         state_changed=previous_state != current_state,
         data_fresh=data_fresh,
-        rule_action=build_action(previous_state, current_state, data_fresh),
+        action_code=action.code,
+        action_label=action.label,
+        action_explanation=action.explanation,
+        rule_action=action.explanation,
         rule_version=RULE_VERSION,
         rule_fingerprint=RULE_FINGERPRINT,
-        data_source="腾讯证券前复权日线 qfqday",
+        data_source=data_source,
+        data_warning=data_warning,
         boundary="规则信号提醒；不读取真实账户，不连接券商，不自动下单",
     )
 
 
 def state_label(state: str) -> str:
-    return "模型持仓 588080" if state == SYMBOL else "模型空仓 CASH"
+    return "持有588080" if state == SYMBOL else "观望（规则未持有588080）"
 
 
 def format_message(report: SignalReport) -> str:
     freshness = "已更新" if report.data_fresh else "未更新"
-    changed = "是" if report.state_changed else "否"
-    return "\n".join(
+    lines = [
+        f"【588080每日提醒｜{report.market_date}】",
+        f"今日结论：{report.action_label}",
+        f"怎么做：{report.action_explanation}",
+        "",
+        f"{SYMBOL_NAME}（{SYMBOL}）收盘：{report.close:.3f}",
+        f"投票：{report.votes}/{report.total_votes}（10票买入，6票卖出）",
+        f"规则状态：{state_label(report.model_state)}",
+        f"行情日期：{report.market_date}（{freshness}）",
+        f"数据来源：{report.data_source}",
+    ]
+    if report.data_warning:
+        lines.append(f"数据说明：{report.data_warning}")
+    lines.extend(
         [
-            f"【V3G规则信号｜{report.market_date}】",
-            f"{SYMBOL_NAME}（{SYMBOL}）收盘：{report.close:.3f}",
-            f"投票：{report.votes}/{report.total_votes}（10票入场，6票离场）",
-            f"模型状态：{state_label(report.model_state)}",
-            f"状态切换：{changed}",
-            f"行情日期：{report.market_date}（{freshness}）",
-            f"规则提示：{report.rule_action}",
-            "说明：这是冻结规则的机械提醒，不读取你的实际持仓；不构成收益保证或个性化投资建议。",
-            f"规则版本：{report.rule_version}",
+            "",
+            "简单说明：",
+            "• 买入提醒＝规则今天首次转为持有。",
+            "• 卖出提醒＝规则今天首次转为观望。",
+            "• 继续持有＝没有新的卖出变化。",
+            "• 观望＝没有新的买入变化，不等于今天新发出卖出提醒。",
+            "",
+            "本项目只发通知，不读取真实持仓、不连接券商、不会自动下单。",
+            "已有旧持仓时，请勿仅凭一条普通“观望”消息临时处理。",
         ]
     )
+    return "\n".join(lines)
 
 
 def validate_feishu_webhook(webhook: str) -> None:
@@ -293,23 +459,43 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def configure_console_encoding() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def main() -> int:
+    configure_console_encoding()
     args = parse_args()
     try:
         validate_frozen_rule()
         history = fetch_history()
-        result = compute_v3g(history)
-        report = build_report(result)
+        save_snapshot(history.frame)
+        result = compute_v3g(history.frame)
+        report = build_report(
+            result,
+            data_source=history.source,
+            data_warning=history.warning,
+        )
         message = format_message(report)
         write_report(report, message, Path(args.output_dir))
         print(message)
 
-        webhook = os.environ.get("FEISHU_WEBHOOK", "").strip()
-        secret = os.environ.get("FEISHU_SECRET", "").strip() or None
+        webhook = (
+            os.environ.get("FEISHU_WEBHOOK", "").strip()
+            or os.environ.get("FEISHU_WEBHOOK_URL", "").strip()
+        )
+        secret = (
+            os.environ.get("FEISHU_SECRET", "").strip()
+            or os.environ.get("FEISHU_WEBHOOK_SECRET", "").strip()
+            or None
+        )
         if args.dry_run:
             print("\n[完成] dry-run：已生成报告，未发送消息。")
         elif not webhook:
-            print("\n[完成] 未配置 FEISHU_WEBHOOK；已生成报告，未发送消息。")
+            print("\n[完成] 未配置飞书 Webhook；已生成报告，未发送消息。")
         else:
             send_feishu(webhook, secret, message)
             print("\n[完成] 飞书消息发送成功。")

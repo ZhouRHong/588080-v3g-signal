@@ -36,19 +36,19 @@ jobs:
 
       - name: Generate signal and notify Feishu
         env:
-          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
-          FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK || secrets.FEISHU_WEBHOOK_URL }}
+          FEISHU_SECRET: ${{ secrets.FEISHU_SECRET || secrets.FEISHU_WEBHOOK_SECRET }}
         run: python notifier.py
 
       - name: Save daily report to the private repository
         shell: bash
         run: |
-          if [ -z "$(git status --porcelain -- reports)" ]; then
+          if [ -z "$(git status --porcelain -- reports data)" ]; then
             echo "No report change to commit."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -- reports
+          git add -- reports data
           git commit -m "Record V3G signal for $(date -u +%F)"
           git push
