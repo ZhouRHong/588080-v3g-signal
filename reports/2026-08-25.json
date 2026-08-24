@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-25T00:15:58+08:00",
+  "generated_at": "2026-08-25T00:17:42+08:00",
   "market_date": "2026-08-24",
   "close": 1.641,
   "votes": 0,
@@ -14,7 +14,7 @@
   "rule_action": "今天还没有新的收盘数据，暂不操作，等待下一个交易日。",
   "rule_version": "V3G-20260824-ensemble-v1",
   "rule_fingerprint": "daf0be01dad72917ecb41fbd94f7d9775570b0bdaa4c4d7ddc5d1dbd38ee9292",
-  "data_source": "Baostock前复权日线 + 已核对历史快照",
-  "data_warning": "腾讯源暂时不可用，已切换备用行情并核对复权口径。",
+  "data_source": "腾讯证券前复权日线 qfqday",
+  "data_warning": "",
   "boundary": "规则信号提醒；不读取真实账户，不连接券商，不自动下单"
 }
