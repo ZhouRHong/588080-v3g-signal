@@ -16,7 +16,7 @@ import os
 import sys
 import time
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, time as wall_time
 from pathlib import Path
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
@@ -40,6 +40,7 @@ TIMEZONE = ZoneInfo("Asia/Shanghai")
 TENCENT_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
 BASE_DIR = Path(__file__).resolve().parent
 SNAPSHOT_PATH = BASE_DIR / "data" / f"{SYMBOL}_qfq_snapshot.csv"
+CLOSE_DATA_CHECK_TIME = wall_time(15, 5)
 
 # Signal-only configuration: deliberately excludes account capital, holdings,
 # costs and other personal/account-specific values.
@@ -234,10 +235,19 @@ def save_snapshot(frame: pd.DataFrame, path: Path = SNAPSHOT_PATH) -> None:
     output.to_csv(path, index=False, encoding="utf-8")
 
 
-def fetch_history(session: requests.Session | None = None) -> HistoryResult:
+def latest_market_date(frame: pd.DataFrame):
+    return pd.Timestamp(frame["date"].max()).date()
+
+
+def fetch_history(
+    session: requests.Session | None = None,
+    now: datetime | None = None,
+) -> HistoryResult:
+    current_time = now.astimezone(TIMEZONE) if now else datetime.now(TIMEZONE)
     errors: list[str] = []
+    tencent_result: HistoryResult | None = None
     try:
-        return HistoryResult(
+        tencent_result = HistoryResult(
             frame=fetch_tencent_history(session),
             source="腾讯证券前复权日线 qfqday",
             warning="",
@@ -245,18 +255,57 @@ def fetch_history(session: requests.Session | None = None) -> HistoryResult:
     except Exception as exc:
         errors.append(f"腾讯：{type(exc).__name__}")
 
+    if tencent_result is not None:
+        tencent_date = latest_market_date(tencent_result.frame)
+        should_check_backup = (
+            current_time.time() >= CLOSE_DATA_CHECK_TIME
+            and tencent_date < current_time.date()
+        )
+        if not should_check_backup:
+            return tencent_result
+
     snapshot = load_snapshot()
     try:
         recent = fetch_baostock_history()
         if snapshot is None:
             raise RuntimeError("缺少历史快照，不能安全拼接备用行情")
+        backup_frame = merge_with_snapshot(snapshot, recent)
+        if (
+            tencent_result is not None
+            and latest_market_date(backup_frame)
+            <= latest_market_date(tencent_result.frame)
+        ):
+            return HistoryResult(
+                frame=tencent_result.frame,
+                source=tencent_result.source,
+                warning=(
+                    f"截至{current_time.strftime('%H:%M')}，主备行情均尚未发布"
+                    f"{current_time.date().isoformat()}收盘数据。"
+                ),
+            )
+        warning = "腾讯源暂时不可用，已切换备用行情并核对复权口径。"
+        if tencent_result is not None:
+            warning = (
+                f"腾讯日线停留在{latest_market_date(tencent_result.frame).isoformat()}，"
+                "已自动采用日期更新的备用行情并核对复权口径。"
+            )
         return HistoryResult(
-            frame=merge_with_snapshot(snapshot, recent),
+            frame=backup_frame,
             source="Baostock前复权日线 + 已核对历史快照",
-            warning="腾讯源暂时不可用，已切换备用行情并核对复权口径。",
+            warning=warning,
         )
     except Exception as exc:
         errors.append(f"Baostock：{type(exc).__name__}")
+
+    if tencent_result is not None:
+        return HistoryResult(
+            frame=tencent_result.frame,
+            source=tencent_result.source,
+            warning=(
+                f"腾讯日线停留在{latest_market_date(tencent_result.frame).isoformat()}，"
+                "备用行情暂时不可用；系统只会显示观望。"
+            ),
+        )
 
     if snapshot is not None:
         return HistoryResult(
@@ -474,6 +523,34 @@ def write_report(report: SignalReport, text: str, output_dir: Path) -> None:
     text_path.write_text(text + "\n", encoding="utf-8")
 
 
+def load_existing_report(output_dir: Path, generated_date: str) -> dict | None:
+    path = output_dir / f"{generated_date}.json"
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def should_send_notification(
+    existing: dict | None, report: SignalReport
+) -> bool:
+    if existing is None:
+        return True
+    fields = (
+        "market_date",
+        "close",
+        "votes",
+        "model_state",
+        "action_code",
+        "data_fresh",
+    )
+    current = asdict(report)
+    return any(existing.get(field) != current.get(field) for field in fields)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="588080 V3G 每日规则信号提醒")
     parser.add_argument(
@@ -508,7 +585,12 @@ def main() -> int:
             data_warning=history.warning,
         )
         message = format_message(report)
-        write_report(report, message, Path(args.output_dir))
+        output_dir = Path(args.output_dir)
+        existing_report = load_existing_report(
+            output_dir, report.generated_at[:10]
+        )
+        notification_needed = should_send_notification(existing_report, report)
+        write_report(report, message, output_dir)
         print(message)
 
         webhook = (
@@ -524,6 +606,8 @@ def main() -> int:
             print("\n[完成] dry-run：已生成报告，未发送消息。")
         elif not webhook:
             print("\n[完成] 未配置飞书 Webhook；已生成报告，未发送消息。")
+        elif not notification_needed:
+            print("\n[完成] 今日同一收盘结果已通知，本次不重复发送。")
         else:
             send_feishu(webhook, secret, message)
             print("\n[完成] 飞书消息发送成功。")

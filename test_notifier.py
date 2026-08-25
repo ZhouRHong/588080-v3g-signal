@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -99,6 +100,46 @@ class V3GNotifierTests(unittest.TestCase):
         inconsistent["close"] = 1.01
         with self.assertRaises(ValueError):
             notifier.merge_with_snapshot(snapshot, inconsistent)
+
+    def test_stale_tencent_uses_fresher_backup_after_close(self) -> None:
+        columns = ["date", "open", "close", "high", "low", "volume"]
+        tencent = pd.DataFrame(
+            [["2026-08-24", 1.69, 1.641, 1.70, 1.61, 100]],
+            columns=columns,
+        )
+        backup = pd.DataFrame(
+            [["2026-08-25", 1.614, 1.643, 1.661, 1.602, 200]],
+            columns=columns,
+        )
+        now = datetime(2026, 8, 25, 16, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        with (
+            patch.object(notifier, "fetch_tencent_history", return_value=tencent),
+            patch.object(notifier, "load_snapshot", return_value=tencent),
+            patch.object(notifier, "fetch_baostock_history", return_value=backup),
+            patch.object(notifier, "merge_with_snapshot", return_value=backup),
+        ):
+            history = notifier.fetch_history(now=now)
+        self.assertEqual(
+            notifier.latest_market_date(history.frame).isoformat(), "2026-08-25"
+        )
+        self.assertIn("Baostock", history.source)
+        self.assertIn("停留在2026-08-24", history.warning)
+
+    def test_same_daily_result_is_not_notified_twice(self) -> None:
+        index = pd.to_datetime(["2026-08-24", "2026-08-25"])
+        result = pd.DataFrame(
+            {
+                "close": [1.641, 1.643],
+                "votes": [0, 0],
+                "state": ["CASH", "CASH"],
+            },
+            index=index,
+        )
+        now = datetime(2026, 8, 25, 16, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        report = notifier.build_report(result, now=now)
+        self.assertFalse(notifier.should_send_notification(vars(report), report))
+        stale = dict(vars(report), market_date="2026-08-24", data_fresh=False)
+        self.assertTrue(notifier.should_send_notification(stale, report))
 
     def test_feishu_signature_is_deterministic(self) -> None:
         first = notifier.feishu_payload("hello", "secret", timestamp=1234567890)
