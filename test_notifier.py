@@ -30,7 +30,25 @@ class V3GNotifierTests(unittest.TestCase):
     def test_stale_data_never_proposes_rule_trade(self) -> None:
         action = notifier.build_action("CASH", "588080", data_fresh=False)
         self.assertEqual(action.code, "WAIT")
-        self.assertIn("观望", action.label)
+        self.assertIn("数据延迟", action.label)
+
+    def test_stale_message_does_not_show_old_vote_as_today_signal(self) -> None:
+        index = pd.to_datetime(["2026-08-24", "2026-08-25"])
+        frame = pd.DataFrame(
+            {
+                "close": [1.641, 1.643],
+                "votes": [0, 0],
+                "state": ["CASH", "CASH"],
+            },
+            index=index,
+        )
+        now = datetime(2026, 8, 26, 16, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        message = notifier.format_message(notifier.build_report(frame, now=now))
+        self.assertIn("【588080数据检查｜2026-08-26】", message)
+        self.assertIn("收盘数据延迟", message)
+        self.assertIn("不是2026-08-26的正式信号", message)
+        self.assertNotIn("投票：", message)
+        self.assertNotIn("收盘：1.643", message)
 
     def test_four_plain_language_actions(self) -> None:
         cases = [

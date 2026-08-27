@@ -361,8 +361,8 @@ def build_action(
     if not data_fresh:
         return PlainAction(
             code="WAIT",
-            label="🟡 观望",
-            explanation="今天还没有新的收盘数据，暂不操作，等待下一个交易日。",
+            label="⚪ 数据延迟",
+            explanation="今天的正式收盘数据尚未发布，暂不操作，等待自动补发。",
         )
     if previous_state == current_state == "CASH":
         return PlainAction(
@@ -441,7 +441,32 @@ def state_label(state: str) -> str:
 
 
 def format_message(report: SignalReport) -> str:
-    freshness = "已更新" if report.data_fresh else "未更新"
+    generated_date = report.generated_at[:10]
+    if not report.data_fresh:
+        lines = [
+            f"【588080数据检查｜{generated_date}】",
+            "当前状态：⚪ 收盘数据延迟",
+            f"怎么做：{report.action_explanation}",
+            "",
+            (
+                f"最后可用行情日期：{report.market_date}"
+                f"（不是{generated_date}的正式信号）"
+            ),
+            f"数据来源：{report.data_source}",
+        ]
+        if report.data_warning:
+            lines.append(f"数据说明：{report.data_warning}")
+        lines.extend(
+            [
+                "",
+                "系统取得今日收盘数据后会自动补发正式结果。",
+                "数据延迟期间不会显示旧收盘价或旧投票，也不会发出买卖提醒。",
+                "",
+                "本项目只发通知，不读取真实持仓、不连接券商、不会自动下单。",
+            ]
+        )
+        return "\n".join(lines)
+
     lines = [
         f"【588080每日提醒｜{report.market_date}】",
         f"今日结论：{report.action_label}",
@@ -450,7 +475,7 @@ def format_message(report: SignalReport) -> str:
         f"{SYMBOL_NAME}（{SYMBOL}）收盘：{report.close:.3f}",
         f"投票：{report.votes}/{report.total_votes}（10票买入，6票卖出）",
         f"规则状态：{state_label(report.model_state)}",
-        f"行情日期：{report.market_date}（{freshness}）",
+        f"行情日期：{report.market_date}（已更新）",
         f"数据来源：{report.data_source}",
     ]
     if report.data_warning:

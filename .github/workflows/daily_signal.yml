@@ -2,9 +2,9 @@ name: V3G daily rule signal
 
 on:
   schedule:
-    - cron: "20 15 * * 1-5"
-      timezone: "Asia/Shanghai"
-    - cron: "10 16 * * 1-5"
+    # GitHub may delay or drop individual scheduled events. Recheck every
+    # 30 minutes after the close; notifier.py suppresses duplicate results.
+    - cron: "17,47 15-21 * * 1-5"
       timezone: "Asia/Shanghai"
   workflow_dispatch:
 
