@@ -41,6 +41,8 @@ TENCENT_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
 BASE_DIR = Path(__file__).resolve().parent
 SNAPSHOT_PATH = BASE_DIR / "data" / f"{SYMBOL}_qfq_snapshot.csv"
 CLOSE_DATA_CHECK_TIME = wall_time(15, 5)
+SCHEDULED_WINDOW_START_MINUTE = 15 * 60
+SCHEDULED_WINDOW_END_MINUTE = 22 * 60 + 30
 
 # Signal-only configuration: deliberately excludes account capital, holdings,
 # costs and other personal/account-specific values.
@@ -596,10 +598,34 @@ def configure_console_encoding() -> None:
             reconfigure(encoding="utf-8", errors="replace")
 
 
+def should_skip_delayed_schedule(
+    now: datetime | None = None,
+    event_name: str | None = None,
+) -> bool:
+    current_time = now.astimezone(TIMEZONE) if now else datetime.now(TIMEZONE)
+    current_event = (
+        event_name if event_name is not None else os.environ.get("GITHUB_EVENT_NAME", "")
+    )
+    if current_event != "schedule":
+        return False
+    minute_of_day = current_time.hour * 60 + current_time.minute
+    return (
+        current_time.weekday() >= 5
+        or minute_of_day < SCHEDULED_WINDOW_START_MINUTE
+        or minute_of_day > SCHEDULED_WINDOW_END_MINUTE
+    )
+
+
 def main() -> int:
     configure_console_encoding()
     args = parse_args()
     try:
+        if should_skip_delayed_schedule():
+            print(
+                "[完成] GitHub定时任务抵达时间已超出工作日收盘检查窗口；"
+                "已跳过，避免把延迟任务误报为新交易日信号。"
+            )
+            return 0
         validate_frozen_rule()
         history = fetch_history()
         save_snapshot(history.frame)

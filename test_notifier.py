@@ -159,6 +159,29 @@ class V3GNotifierTests(unittest.TestCase):
         stale = dict(vars(report), market_date="2026-08-24", data_fresh=False)
         self.assertTrue(notifier.should_send_notification(stale, report))
 
+    def test_delayed_schedule_outside_window_is_skipped(self) -> None:
+        saturday_early = datetime(
+            2026, 8, 29, 3, 25, tzinfo=ZoneInfo("Asia/Shanghai")
+        )
+        monday_evening = datetime(
+            2026, 8, 31, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai")
+        )
+        self.assertTrue(
+            notifier.should_skip_delayed_schedule(
+                now=saturday_early, event_name="schedule"
+            )
+        )
+        self.assertFalse(
+            notifier.should_skip_delayed_schedule(
+                now=monday_evening, event_name="schedule"
+            )
+        )
+        self.assertFalse(
+            notifier.should_skip_delayed_schedule(
+                now=saturday_early, event_name="workflow_dispatch"
+            )
+        )
+
     def test_feishu_signature_is_deterministic(self) -> None:
         first = notifier.feishu_payload("hello", "secret", timestamp=1234567890)
         second = notifier.feishu_payload("hello", "secret", timestamp=1234567890)
