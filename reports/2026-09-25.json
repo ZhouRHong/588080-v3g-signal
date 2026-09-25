@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-25T20:46:23+08:00",
+  "generated_at": "2026-09-25T23:08:18+08:00",
   "market_date": "2026-09-24",
   "close": 1.662,
   "votes": 0,
@@ -15,6 +15,6 @@
   "rule_version": "V3G-20260824-ensemble-v1",
   "rule_fingerprint": "daf0be01dad72917ecb41fbd94f7d9775570b0bdaa4c4d7ddc5d1dbd38ee9292",
   "data_source": "腾讯证券前复权日线 qfqday",
-  "data_warning": "截至20:45，主备行情均尚未发布2026-09-25收盘数据。",
+  "data_warning": "截至23:08，主备行情均尚未发布2026-09-25收盘数据。",
   "boundary": "规则信号提醒；不读取真实账户，不连接券商，不自动下单"
 }
