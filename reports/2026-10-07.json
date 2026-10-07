@@ -1,0 +1,20 @@
+{
+  "generated_at": "2026-10-07T22:29:34+08:00",
+  "market_date": "2026-09-30",
+  "close": 1.569,
+  "votes": 0,
+  "total_votes": 15,
+  "model_state": "CASH",
+  "previous_model_state": "CASH",
+  "state_changed": false,
+  "data_fresh": false,
+  "action_code": "WAIT",
+  "action_label": "⚪ 数据延迟",
+  "action_explanation": "今天的正式收盘数据尚未发布，暂不操作，等待自动补发。",
+  "rule_action": "今天的正式收盘数据尚未发布，暂不操作，等待自动补发。",
+  "rule_version": "V3G-20260824-ensemble-v1",
+  "rule_fingerprint": "daf0be01dad72917ecb41fbd94f7d9775570b0bdaa4c4d7ddc5d1dbd38ee9292",
+  "data_source": "腾讯证券前复权日线 qfqday",
+  "data_warning": "截至22:29，主备行情均尚未发布2026-10-07收盘数据。",
+  "boundary": "规则信号提醒；不读取真实账户，不连接券商，不自动下单"
+}
