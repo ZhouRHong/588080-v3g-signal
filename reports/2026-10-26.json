@@ -1,0 +1,20 @@
+{
+  "generated_at": "2026-10-26T22:14:58+08:00",
+  "market_date": "2026-10-26",
+  "close": 1.341,
+  "votes": 0,
+  "total_votes": 15,
+  "model_state": "CASH",
+  "previous_model_state": "CASH",
+  "state_changed": false,
+  "data_fresh": true,
+  "action_code": "WAIT",
+  "action_label": "🟡 观望",
+  "action_explanation": "规则目前没有新的买入信号，暂不买入。",
+  "rule_action": "规则目前没有新的买入信号，暂不买入。",
+  "rule_version": "V3G-20260824-ensemble-v1",
+  "rule_fingerprint": "daf0be01dad72917ecb41fbd94f7d9775570b0bdaa4c4d7ddc5d1dbd38ee9292",
+  "data_source": "腾讯证券前复权日线 qfqday",
+  "data_warning": "",
+  "boundary": "规则信号提醒；不读取真实账户，不连接券商，不自动下单"
+}
